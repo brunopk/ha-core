@@ -465,6 +465,7 @@ FLOWS = {
         "steamist",
         "stookalert",
         "stookwijzer",
+        "strip_controller",
         "subaru",
         "sun",
         "surepetcare",
