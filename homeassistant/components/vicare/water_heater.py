@@ -1,4 +1,6 @@
 """Viessmann ViCare water_heater device."""
+from __future__ import annotations
+
 from contextlib import suppress
 import logging
 from typing import Any
@@ -24,6 +26,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, VICARE_API, VICARE_DEVICE_CONFIG
 from .entity import ViCareEntity
+from .utils import get_circuits
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,13 +60,20 @@ HA_TO_VICARE_HVAC_DHW = {
 }
 
 
-def _get_circuits(vicare_api):
-    """Return the list of circuits."""
-    try:
-        return vicare_api.circuits
-    except PyViCareNotSupportedFeatureError:
-        _LOGGER.info("No circuits found")
-        return []
+def _build_entities(
+    api: PyViCareDevice,
+    device_config: PyViCareDeviceConfig,
+) -> list[ViCareWater]:
+    """Create ViCare domestic hot water entities for a device."""
+    return [
+        ViCareWater(
+            api,
+            circuit,
+            device_config,
+            "domestic_hot_water",
+        )
+        for circuit in get_circuits(api)
+    ]
 
 
 async def async_setup_entry(
@@ -71,22 +81,17 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the ViCare climate platform."""
-    entities = []
+    """Set up the ViCare water heater platform."""
     api = hass.data[DOMAIN][config_entry.entry_id][VICARE_API]
     device_config = hass.data[DOMAIN][config_entry.entry_id][VICARE_DEVICE_CONFIG]
-    circuits = await hass.async_add_executor_job(_get_circuits, api)
 
-    for circuit in circuits:
-        entity = ViCareWater(
+    async_add_entities(
+        await hass.async_add_executor_job(
+            _build_entities,
             api,
-            circuit,
             device_config,
-            "water",
         )
-        entities.append(entity)
-
-    async_add_entities(entities)
+    )
 
 
 class ViCareWater(ViCareEntity, WaterHeaterEntity):
