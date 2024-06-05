@@ -1,4 +1,5 @@
 """Tests for the Bluetooth integration advertisement tracking."""
+
 from datetime import timedelta
 import time
 
@@ -32,11 +33,9 @@ from tests.common import async_fire_time_changed
 ONE_HOUR_SECONDS = 3600
 
 
+@pytest.mark.usefixtures("enable_bluetooth", "macos_adapter")
 async def test_advertisment_interval_shorter_than_adapter_stack_timeout(
     hass: HomeAssistant,
-    caplog: pytest.LogCaptureFixture,
-    enable_bluetooth: None,
-    macos_adapter: None,
 ) -> None:
     """Test we can determine the advertisement interval."""
     start_monotonic_time = time.monotonic()
@@ -82,11 +81,9 @@ async def test_advertisment_interval_shorter_than_adapter_stack_timeout(
     switchbot_device_unavailable_cancel()
 
 
+@pytest.mark.usefixtures("enable_bluetooth", "macos_adapter")
 async def test_advertisment_interval_longer_than_adapter_stack_timeout_connectable(
     hass: HomeAssistant,
-    caplog: pytest.LogCaptureFixture,
-    enable_bluetooth: None,
-    macos_adapter: None,
 ) -> None:
     """Test device with a long advertisement interval."""
     start_monotonic_time = time.monotonic()
@@ -134,11 +131,9 @@ async def test_advertisment_interval_longer_than_adapter_stack_timeout_connectab
     switchbot_device_unavailable_cancel()
 
 
+@pytest.mark.usefixtures("enable_bluetooth", "macos_adapter")
 async def test_advertisment_interval_longer_than_adapter_stack_timeout_adapter_change_connectable(
     hass: HomeAssistant,
-    caplog: pytest.LogCaptureFixture,
-    enable_bluetooth: None,
-    macos_adapter: None,
 ) -> None:
     """Test device with a long advertisement interval with an adapter change."""
     start_monotonic_time = time.monotonic()
@@ -199,11 +194,9 @@ async def test_advertisment_interval_longer_than_adapter_stack_timeout_adapter_c
     switchbot_device_unavailable_cancel()
 
 
+@pytest.mark.usefixtures("enable_bluetooth", "macos_adapter")
 async def test_advertisment_interval_longer_than_adapter_stack_timeout_not_connectable(
     hass: HomeAssistant,
-    caplog: pytest.LogCaptureFixture,
-    enable_bluetooth: None,
-    macos_adapter: None,
 ) -> None:
     """Test device with a long advertisement interval that is not connectable not reaching the advertising interval."""
     start_monotonic_time = time.monotonic()
@@ -254,11 +247,9 @@ async def test_advertisment_interval_longer_than_adapter_stack_timeout_not_conne
     switchbot_device_unavailable_cancel()
 
 
+@pytest.mark.usefixtures("enable_bluetooth", "macos_adapter")
 async def test_advertisment_interval_shorter_than_adapter_stack_timeout_adapter_change_not_connectable(
     hass: HomeAssistant,
-    caplog: pytest.LogCaptureFixture,
-    enable_bluetooth: None,
-    macos_adapter: None,
 ) -> None:
     """Test device with a short advertisement interval with an adapter change that is not connectable."""
     start_monotonic_time = time.monotonic()
@@ -329,11 +320,9 @@ async def test_advertisment_interval_shorter_than_adapter_stack_timeout_adapter_
     switchbot_device_unavailable_cancel()
 
 
+@pytest.mark.usefixtures("enable_bluetooth", "macos_adapter")
 async def test_advertisment_interval_longer_than_adapter_stack_timeout_adapter_change_not_connectable(
     hass: HomeAssistant,
-    caplog: pytest.LogCaptureFixture,
-    enable_bluetooth: None,
-    macos_adapter: None,
 ) -> None:
     """Test device with a long advertisement interval with an adapter change that is not connectable."""
     start_monotonic_time = time.monotonic()
@@ -435,11 +424,9 @@ async def test_advertisment_interval_longer_than_adapter_stack_timeout_adapter_c
     switchbot_device_unavailable_cancel()
 
 
+@pytest.mark.usefixtures("enable_bluetooth", "macos_adapter")
 async def test_advertisment_interval_longer_increasing_than_adapter_stack_timeout_adapter_change_not_connectable(
     hass: HomeAssistant,
-    caplog: pytest.LogCaptureFixture,
-    enable_bluetooth: None,
-    macos_adapter: None,
 ) -> None:
     """Test device with a increasing advertisement interval with an adapter change that is not connectable."""
     start_monotonic_time = time.monotonic()

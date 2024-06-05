@@ -1,4 +1,5 @@
 """Binary Sensor platform for Tessie integration."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -9,12 +10,12 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, TessieState
+from . import TessieConfigEntry
+from .const import TessieState
 from .coordinator import TessieStateUpdateCoordinator
 from .entity import TessieEntity
 
@@ -33,7 +34,7 @@ DESCRIPTIONS: tuple[TessieBinarySensorEntityDescription, ...] = (
         is_on=lambda x: x == TessieState.ONLINE,
     ),
     TessieBinarySensorEntityDescription(
-        key="charge_state_battery_heater_on",
+        key="climate_state_battery_heater",
         device_class=BinarySensorDeviceClass.HEAT,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
@@ -92,7 +93,7 @@ DESCRIPTIONS: tuple[TessieBinarySensorEntityDescription, ...] = (
     ),
     TessieBinarySensorEntityDescription(
         key="vehicle_state_is_user_present",
-        device_class=BinarySensorDeviceClass.PRESENCE,
+        device_class=BinarySensorDeviceClass.OCCUPANCY,
     ),
     TessieBinarySensorEntityDescription(
         key="vehicle_state_tpms_soft_warning_fl",
@@ -158,16 +159,18 @@ DESCRIPTIONS: tuple[TessieBinarySensorEntityDescription, ...] = (
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: TessieConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Tessie binary sensor platform from a config entry."""
-    data = hass.data[DOMAIN][entry.entry_id]
+    data = entry.runtime_data
 
     async_add_entities(
-        TessieBinarySensorEntity(vehicle.state_coordinator, description)
-        for vehicle in data
+        TessieBinarySensorEntity(vehicle, description)
+        for vehicle in data.vehicles
         for description in DESCRIPTIONS
-        if description.key in vehicle.state_coordinator.data
+        if description.key in vehicle.data
     )
 
 

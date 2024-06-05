@@ -1,4 +1,5 @@
 """The V2C integration."""
+
 from __future__ import annotations
 
 from pytrydan import Trydan
@@ -13,9 +14,9 @@ from .coordinator import V2CUpdateCoordinator
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
+    Platform.NUMBER,
     Platform.SENSOR,
     Platform.SWITCH,
-    Platform.NUMBER,
 ]
 
 
@@ -29,6 +30,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+
+    if coordinator.data.ID and entry.unique_id != coordinator.data.ID:
+        hass.config_entries.async_update_entry(entry, unique_id=coordinator.data.ID)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

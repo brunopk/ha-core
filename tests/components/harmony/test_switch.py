@@ -1,5 +1,8 @@
 """Test the Logitech Harmony Hub activity switches."""
+
 from datetime import timedelta
+
+import pytest
 
 from homeassistant.components import automation, script
 from homeassistant.components.automation import automations_with_entity
@@ -89,21 +92,22 @@ async def test_connection_state_changes(
 
 
 async def test_switch_toggles(
-    mock_hc, hass: HomeAssistant, mock_write_config, entity_registry: er.EntityRegistry
+    mock_hc,
+    hass: HomeAssistant,
+    mock_write_config,
+    entity_registry: er.EntityRegistry,
+    mock_config_entry: MockConfigEntry,
 ) -> None:
     """Ensure calls to the switch modify the harmony state."""
-    entry = MockConfigEntry(
-        domain=DOMAIN, data={CONF_HOST: "192.0.2.0", CONF_NAME: HUB_NAME}
-    )
 
-    entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(entry.entry_id)
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
     # enable switch entities
     entity_registry.async_update_entity(ENTITY_WATCH_TV, disabled_by=None)
     entity_registry.async_update_entity(ENTITY_PLAY_MUSIC, disabled_by=None)
-    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
     # mocks start with current activity == Watch TV
@@ -140,12 +144,12 @@ async def _toggle_switch_and_wait(hass, service_name, entity):
     await hass.async_block_till_done()
 
 
+@pytest.mark.usefixtures("entity_registry_enabled_by_default")
 async def test_create_issue(
     harmony_client,
     mock_hc,
     hass: HomeAssistant,
     mock_write_config,
-    entity_registry_enabled_by_default: None,
     issue_registry: ir.IssueRegistry,
 ) -> None:
     """Test we create an issue when an automation or script is using a deprecated entity."""
