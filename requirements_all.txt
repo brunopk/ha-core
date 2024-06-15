@@ -2781,9 +2781,6 @@ twilio==6.32.0
 # homeassistant.components.twitch
 twitchAPI==4.0.0
 
-# homeassistant.components.strip_controller
-typing==3.7.4.3
-
 # homeassistant.components.ukraine_alarm
 uasiren==0.0.1
 
@@ -2843,6 +2840,9 @@ volkszaehler==0.4.0
 # homeassistant.components.google_generative_ai_conversation
 # homeassistant.components.openai_conversation
 voluptuous-openapi==0.0.4
+
+# homeassistant.components.strip_controller
+voluptuous==0.13.1
 
 # homeassistant.components.volvooncall
 volvooncall==0.10.3

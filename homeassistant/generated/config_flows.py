@@ -524,6 +524,7 @@ FLOWS = {
         "stookalert",
         "stookwijzer",
         "streamlabswater",
+        "strip_controller",
         "subaru",
         "suez_water",
         "sun",
