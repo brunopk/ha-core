@@ -1034,6 +1034,9 @@ lupupy==0.3.2
 # homeassistant.components.scrape
 lxml==5.1.0
 
+# homeassistant.components.strip_controller
+mashumaro==3.15
+
 # homeassistant.components.matrix
 matrix-nio==0.24.0
 
