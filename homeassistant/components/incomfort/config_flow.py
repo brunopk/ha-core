@@ -16,7 +16,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import DOMAIN
-from .models import async_connect_gateway
+from .coordinator import async_connect_gateway
 
 TITLE = "Intergas InComfort/Intouch Lan2RF gateway"
 
@@ -81,11 +81,3 @@ class InComfortConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user", data_schema=CONFIG_SCHEMA, errors=errors
         )
-
-    async def async_step_import(self, import_data: dict[str, Any]) -> ConfigFlowResult:
-        """Import `incomfort` config entry from configuration.yaml."""
-        errors: dict[str, str] | None = None
-        if (errors := await async_try_connect_gateway(self.hass, import_data)) is None:
-            return self.async_create_entry(title=TITLE, data=import_data)
-        reason = next(iter(errors.items()))[1]
-        return self.async_abort(reason=reason)

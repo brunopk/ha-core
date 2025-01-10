@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock
 
-from pyunifiprotect.data import Camera, DoorbellMessageType, LCDMessage
+from uiprotect.data import Camera, DoorbellMessageType, LCDMessage
 
 from homeassistant.components.unifiprotect.const import DEFAULT_ATTRIBUTION
 from homeassistant.components.unifiprotect.text import CAMERA
@@ -78,7 +78,7 @@ async def test_text_camera_set(
         Platform.TEXT, doorbell, description
     )
 
-    doorbell.__fields__["set_lcd_text"] = Mock(final=False)
+    doorbell.__pydantic_fields__["set_lcd_text"] = Mock(final=False, frozen=False)
     doorbell.set_lcd_text = AsyncMock()
 
     await hass.services.async_call(

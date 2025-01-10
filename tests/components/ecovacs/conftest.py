@@ -10,6 +10,7 @@ from deebot_client.device import Device
 from deebot_client.exceptions import ApiError
 from deebot_client.models import Credentials
 import pytest
+from sucks import EventEmitter
 
 from homeassistant.components.ecovacs import PLATFORMS
 from homeassistant.components.ecovacs.const import DOMAIN
@@ -23,7 +24,7 @@ from tests.common import MockConfigEntry, load_json_object_fixture
 
 
 @pytest.fixture
-def mock_setup_entry() -> Generator[AsyncMock, None, None]:
+def mock_setup_entry() -> Generator[AsyncMock]:
     """Override async_setup_entry."""
     with patch(
         "homeassistant.components.ecovacs.async_setup_entry", return_value=True
@@ -54,7 +55,7 @@ def device_fixture() -> str:
 
 
 @pytest.fixture
-def mock_authenticator(device_fixture: str) -> Generator[Mock, None, None]:
+def mock_authenticator(device_fixture: str) -> Generator[Mock]:
     """Mock the authenticator."""
     with (
         patch(
@@ -99,7 +100,7 @@ def mock_authenticator_authenticate(mock_authenticator: Mock) -> AsyncMock:
 
 
 @pytest.fixture
-def mock_mqtt_client(mock_authenticator: Mock) -> Generator[Mock, None, None]:
+def mock_mqtt_client(mock_authenticator: Mock) -> Generator[Mock]:
     """Mock the MQTT client."""
     with (
         patch(
@@ -118,7 +119,28 @@ def mock_mqtt_client(mock_authenticator: Mock) -> Generator[Mock, None, None]:
 
 
 @pytest.fixture
-def mock_device_execute() -> Generator[AsyncMock, None, None]:
+def mock_vacbot(device_fixture: str) -> Generator[Mock]:
+    """Mock the legacy VacBot."""
+    with patch(
+        "homeassistant.components.ecovacs.controller.VacBot",
+        autospec=True,
+    ) as mock:
+        vacbot = mock.return_value
+        vacbot.vacuum = load_json_object_fixture(
+            f"devices/{device_fixture}/device.json", DOMAIN
+        )
+        vacbot.statusEvents = EventEmitter()
+        vacbot.batteryEvents = EventEmitter()
+        vacbot.lifespanEvents = EventEmitter()
+        vacbot.errorEvents = EventEmitter()
+        vacbot.battery_status = None
+        vacbot.fan_speed = None
+        vacbot.components = {}
+        yield vacbot
+
+
+@pytest.fixture
+def mock_device_execute() -> Generator[AsyncMock]:
     """Mock the device execute function."""
     with patch.object(
         Device,
@@ -142,7 +164,7 @@ async def init_integration(
     mock_mqtt_client: Mock,
     mock_device_execute: AsyncMock,
     platforms: Platform | list[Platform],
-) -> AsyncGenerator[MockConfigEntry, None]:
+) -> AsyncGenerator[MockConfigEntry]:
     """Set up the Ecovacs integration for testing."""
     if not isinstance(platforms, list):
         platforms = [platforms]
@@ -154,7 +176,7 @@ async def init_integration(
         mock_config_entry.add_to_hass(hass)
 
         await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
         yield mock_config_entry
 
 

@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from homeassistant.components.homeassistant import exposed_entities
+from homeassistant.components.lock import LockState
 from homeassistant.components.switch_as_x.config_flow import SwitchAsXConfigFlowHandler
 from homeassistant.components.switch_as_x.const import (
     CONF_INVERT,
@@ -17,11 +18,9 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import (
     CONF_ENTITY_ID,
     STATE_CLOSED,
-    STATE_LOCKED,
     STATE_OFF,
     STATE_ON,
     STATE_OPEN,
-    STATE_UNLOCKED,
     EntityCategory,
     Platform,
 )
@@ -74,7 +73,7 @@ async def test_config_entry_unregistered_uuid(
         (Platform.COVER, STATE_OPEN, STATE_CLOSED),
         (Platform.FAN, STATE_ON, STATE_OFF),
         (Platform.LIGHT, STATE_ON, STATE_OFF),
-        (Platform.LOCK, STATE_UNLOCKED, STATE_LOCKED),
+        (Platform.LOCK, LockState.UNLOCKED, LockState.LOCKED),
         (Platform.SIREN, STATE_ON, STATE_OFF),
         (Platform.VALVE, STATE_OPEN, STATE_CLOSED),
     ],
@@ -171,8 +170,10 @@ async def test_device_registry_config_entry_1(
         original_name="ABC",
     )
     # Add another config entry to the same device
+    other_config_entry = MockConfigEntry()
+    other_config_entry.add_to_hass(hass)
     device_registry.async_update_device(
-        device_entry.id, add_config_entry_id=MockConfigEntry().entry_id
+        device_entry.id, add_config_entry_id=other_config_entry.entry_id
     )
 
     switch_as_x_config_entry = MockConfigEntry(
@@ -782,8 +783,8 @@ async def test_import_expose_settings_1(
     expose_settings = exposed_entities.async_get_entity_settings(
         hass, entity_entry.entity_id
     )
-    for assistant in EXPOSE_SETTINGS:
-        assert expose_settings[assistant]["should_expose"] == EXPOSE_SETTINGS[assistant]
+    for assistant, settings in EXPOSE_SETTINGS.items():
+        assert expose_settings[assistant]["should_expose"] == settings
 
     # Check the switch is no longer exposed
     expose_settings = exposed_entities.async_get_entity_settings(
@@ -856,18 +857,15 @@ async def test_import_expose_settings_2(
     expose_settings = exposed_entities.async_get_entity_settings(
         hass, entity_entry.entity_id
     )
-    for assistant in EXPOSE_SETTINGS:
-        assert (
-            expose_settings[assistant]["should_expose"]
-            is not EXPOSE_SETTINGS[assistant]
-        )
+    for assistant, settings in EXPOSE_SETTINGS.items():
+        assert expose_settings[assistant]["should_expose"] is not settings
 
     # Check the switch settings were not modified
     expose_settings = exposed_entities.async_get_entity_settings(
         hass, switch_entity_entry.entity_id
     )
-    for assistant in EXPOSE_SETTINGS:
-        assert expose_settings[assistant]["should_expose"] == EXPOSE_SETTINGS[assistant]
+    for assistant, settings in EXPOSE_SETTINGS.items():
+        assert expose_settings[assistant]["should_expose"] == settings
 
 
 @pytest.mark.parametrize("target_domain", PLATFORMS_TO_TEST)
@@ -922,8 +920,8 @@ async def test_restore_expose_settings(
     expose_settings = exposed_entities.async_get_entity_settings(
         hass, switch_entity_entry.entity_id
     )
-    for assistant in EXPOSE_SETTINGS:
-        assert expose_settings[assistant]["should_expose"] == EXPOSE_SETTINGS[assistant]
+    for assistant, settings in EXPOSE_SETTINGS.items():
+        assert expose_settings[assistant]["should_expose"] == settings
 
 
 @pytest.mark.parametrize("target_domain", PLATFORMS_TO_TEST)

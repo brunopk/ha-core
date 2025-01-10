@@ -22,8 +22,36 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import intent, llm
 from homeassistant.setup import async_setup_component
+from homeassistant.util import ulid
 
 from tests.common import MockConfigEntry
+
+
+async def test_entity(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_init_component,
+) -> None:
+    """Test entity properties."""
+    state = hass.states.get("conversation.openai")
+    assert state
+    assert state.attributes["supported_features"] == 0
+
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_LLM_HASS_API: "assist",
+        },
+    )
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
+
+    state = hass.states.get("conversation.openai")
+    assert state
+    assert (
+        state.attributes["supported_features"]
+        == conversation.ConversationEntityFeature.CONTROL
+    )
 
 
 async def test_error_handling(
@@ -118,6 +146,107 @@ async def test_template_variables(
     assert (
         "The user id is 12345."
         in mock_create.mock_calls[0][2]["messages"][0]["content"]
+    )
+
+
+async def test_extra_systen_prompt(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Test that template variables work."""
+    extra_system_prompt = "Garage door cover.garage_door has been left open for 30 minutes. We asked the user if they want to close it."
+    extra_system_prompt2 = (
+        "User person.paulus came home. Asked him what he wants to do."
+    )
+
+    with (
+        patch(
+            "openai.resources.models.AsyncModels.list",
+        ),
+        patch(
+            "openai.resources.chat.completions.AsyncCompletions.create",
+            new_callable=AsyncMock,
+        ) as mock_create,
+    ):
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        result = await conversation.async_converse(
+            hass,
+            "hello",
+            None,
+            Context(),
+            agent_id=mock_config_entry.entry_id,
+            extra_system_prompt=extra_system_prompt,
+        )
+
+    assert (
+        result.response.response_type == intent.IntentResponseType.ACTION_DONE
+    ), result
+    assert mock_create.mock_calls[0][2]["messages"][0]["content"].endswith(
+        extra_system_prompt
+    )
+
+    conversation_id = result.conversation_id
+
+    # Verify that follow-up conversations with no system prompt take previous one
+    with patch(
+        "openai.resources.chat.completions.AsyncCompletions.create",
+        new_callable=AsyncMock,
+    ) as mock_create:
+        result = await conversation.async_converse(
+            hass,
+            "hello",
+            conversation_id,
+            Context(),
+            agent_id=mock_config_entry.entry_id,
+            extra_system_prompt=None,
+        )
+
+    assert (
+        result.response.response_type == intent.IntentResponseType.ACTION_DONE
+    ), result
+    assert mock_create.mock_calls[0][2]["messages"][0]["content"].endswith(
+        extra_system_prompt
+    )
+
+    # Verify that we take new system prompts
+    with patch(
+        "openai.resources.chat.completions.AsyncCompletions.create",
+        new_callable=AsyncMock,
+    ) as mock_create:
+        result = await conversation.async_converse(
+            hass,
+            "hello",
+            conversation_id,
+            Context(),
+            agent_id=mock_config_entry.entry_id,
+            extra_system_prompt=extra_system_prompt2,
+        )
+
+    assert (
+        result.response.response_type == intent.IntentResponseType.ACTION_DONE
+    ), result
+    assert mock_create.mock_calls[0][2]["messages"][0]["content"].endswith(
+        extra_system_prompt2
+    )
+
+    # Verify that follow-up conversations with no system prompt take previous one
+    with patch(
+        "openai.resources.chat.completions.AsyncCompletions.create",
+        new_callable=AsyncMock,
+    ) as mock_create:
+        result = await conversation.async_converse(
+            hass,
+            "hello",
+            conversation_id,
+            Context(),
+            agent_id=mock_config_entry.entry_id,
+        )
+
+    assert (
+        result.response.response_type == intent.IntentResponseType.ACTION_DONE
+    ), result
+    assert mock_create.mock_calls[0][2]["messages"][0]["content"].endswith(
+        extra_system_prompt2
     )
 
 
@@ -266,7 +395,7 @@ async def test_function_call(
     assert [event["event_type"] for event in trace_events] == [
         trace.ConversationTraceEventType.ASYNC_PROCESS,
         trace.ConversationTraceEventType.AGENT_DETAIL,
-        trace.ConversationTraceEventType.LLM_TOOL_CALL,
+        trace.ConversationTraceEventType.TOOL_CALL,
     ]
     # AGENT_DETAIL event contains the raw prompt passed to the model
     detail_event = trace_events[1]
@@ -275,6 +404,7 @@ async def test_function_call(
         "Today's date is 2024-06-03."
         in trace_events[1]["data"]["messages"][0]["content"]
     )
+    assert [t.name for t in detail_event["data"]["tools"]] == ["test_tool"]
 
     # Call it again, make sure we have updated prompt
     with (
@@ -428,7 +558,7 @@ async def test_assist_api_tools_conversion(
     mock_init_component,
 ) -> None:
     """Test that we are able to convert actual tools from Assist API."""
-    for component in [
+    for component in (
         "intent",
         "todo",
         "light",
@@ -439,7 +569,7 @@ async def test_assist_api_tools_conversion(
         "vacuum",
         "cover",
         "weather",
-    ]:
+    ):
         assert await async_setup_component(hass, component, {})
 
     agent_id = mock_config_entry_with_assist.entry_id
@@ -492,8 +622,48 @@ async def test_unknown_hass_api(
         },
     )
 
+    await hass.async_block_till_done()
+
     result = await conversation.async_converse(
         hass, "hello", None, Context(), agent_id=mock_config_entry.entry_id
     )
 
     assert result == snapshot
+
+
+@patch(
+    "openai.resources.chat.completions.AsyncCompletions.create",
+    new_callable=AsyncMock,
+)
+async def test_conversation_id(
+    mock_create,
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_init_component,
+) -> None:
+    """Test conversation ID is honored."""
+    result = await conversation.async_converse(
+        hass, "hello", None, None, agent_id=mock_config_entry.entry_id
+    )
+
+    conversation_id = result.conversation_id
+
+    result = await conversation.async_converse(
+        hass, "hello", conversation_id, None, agent_id=mock_config_entry.entry_id
+    )
+
+    assert result.conversation_id == conversation_id
+
+    unknown_id = ulid.ulid()
+
+    result = await conversation.async_converse(
+        hass, "hello", unknown_id, None, agent_id=mock_config_entry.entry_id
+    )
+
+    assert result.conversation_id != unknown_id
+
+    result = await conversation.async_converse(
+        hass, "hello", "koala", None, agent_id=mock_config_entry.entry_id
+    )
+
+    assert result.conversation_id == "koala"

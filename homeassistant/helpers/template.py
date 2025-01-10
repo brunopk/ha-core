@@ -9,6 +9,7 @@ import collections.abc
 from collections.abc import Callable, Generator, Iterable
 from contextlib import AbstractContextManager
 from contextvars import ContextVar
+from copy import deepcopy
 from datetime import date, datetime, time, timedelta
 from functools import cache, lru_cache, partial, wraps
 import json
@@ -22,7 +23,16 @@ import statistics
 from struct import error as StructError, pack, unpack_from
 import sys
 from types import CodeType, TracebackType
-from typing import Any, Concatenate, Literal, NoReturn, Self, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Concatenate,
+    Literal,
+    NoReturn,
+    Self,
+    cast,
+    overload,
+)
 from urllib.parse import urlencode as urllib_urlencode
 import weakref
 
@@ -34,6 +44,7 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 from jinja2.utils import Namespace
 from lru import LRU
 import orjson
+from propcache import under_cached_property
 import voluptuous as vol
 
 from homeassistant.const import (
@@ -51,6 +62,7 @@ from homeassistant.const import (
 from homeassistant.core import (
     Context,
     HomeAssistant,
+    ServiceResponse,
     State,
     callback,
     split_entity_id,
@@ -80,9 +92,13 @@ from . import (
     label_registry,
     location as loc_helper,
 )
+from .deprecation import deprecated_function
 from .singleton import singleton
 from .translation import async_translate_state
 from .typing import TemplateVarsType
+
+if TYPE_CHECKING:
+    from _typeshed import OptExcInfo
 
 # mypy: allow-untyped-defs, no-check-untyped-defs
 
@@ -149,6 +165,7 @@ CACHED_TEMPLATE_STATES = 512
 EVAL_CACHE_SIZE = 512
 
 MAX_CUSTOM_TEMPLATE_SIZE = 5 * 1024 * 1024
+MAX_TEMPLATE_OUTPUT = 256 * 1024  # 256KiB
 
 CACHED_TEMPLATE_LRU: LRU[State, TemplateState] = LRU(CACHED_TEMPLATE_STATES)
 CACHED_TEMPLATE_NO_COLLECT_LRU: LRU[State, TemplateState] = LRU(CACHED_TEMPLATE_STATES)
@@ -205,15 +222,24 @@ def async_setup(hass: HomeAssistant) -> bool:
 
 
 @bind_hass
+@deprecated_function(
+    "automatic setting of Template.hass introduced by HA Core PR #89242",
+    breaks_in_ha_version="2025.10",
+)
 def attach(hass: HomeAssistant, obj: Any) -> None:
+    """Recursively attach hass to all template instances in list and dict."""
+    return _attach(hass, obj)
+
+
+def _attach(hass: HomeAssistant, obj: Any) -> None:
     """Recursively attach hass to all template instances in list and dict."""
     if isinstance(obj, list):
         for child in obj:
-            attach(hass, child)
+            _attach(hass, child)
     elif isinstance(obj, collections.abc.Mapping):
         for child_key, child_value in obj.items():
-            attach(hass, child_key)
-            attach(hass, child_value)
+            _attach(hass, child_key)
+            _attach(hass, child_value)
     elif isinstance(obj, Template):
         obj.hass = hass
 
@@ -495,16 +521,30 @@ class Template:
     )
 
     def __init__(self, template: str, hass: HomeAssistant | None = None) -> None:
-        """Instantiate a template."""
+        """Instantiate a template.
+
+        Note: A valid hass instance should always be passed in. The hass parameter
+        will be non optional in Home Assistant Core 2025.10.
+        """
+        # pylint: disable-next=import-outside-toplevel
+        from .frame import ReportBehavior, report_usage
+
         if not isinstance(template, str):
             raise TypeError("Expected template to be a string")
+
+        if not hass:
+            report_usage(
+                "creates a template object without passing hass",
+                core_behavior=ReportBehavior.LOG,
+                breaks_in_ha_version="2025.10",
+            )
 
         self.template: str = template.strip()
         self._compiled_code: CodeType | None = None
         self._compiled: jinja2.Template | None = None
         self.hass = hass
         self.is_static = not is_template_string(template)
-        self._exc_info: sys._OptExcInfo | None = None
+        self._exc_info: OptExcInfo | None = None
         self._limited: bool | None = None
         self._strict: bool | None = None
         self._log_fn: Callable[[int, str], None] | None = None
@@ -603,6 +643,11 @@ class Template:
             render_result = _render_with_context(self.template, compiled, **kwargs)
         except Exception as err:
             raise TemplateError(err) from err
+
+        if len(render_result) > MAX_TEMPLATE_OUTPUT:
+            raise TemplateError(
+                f"Template output exceeded maximum size of {MAX_TEMPLATE_OUTPUT} characters"
+            )
 
         render_result = render_result.strip()
 
@@ -882,7 +927,7 @@ class AllStates:
         if (render_info := _render_info.get()) is not None:
             render_info.all_states_lifecycle = True
 
-    def __iter__(self) -> Generator[TemplateState, None, None]:
+    def __iter__(self) -> Generator[TemplateState]:
         """Return all states."""
         self._collect_all()
         return _state_generator(self._hass, None)
@@ -972,7 +1017,7 @@ class DomainStates:
         if (entity_collect := _render_info.get()) is not None:
             entity_collect.domains_lifecycle.add(self._domain)  # type: ignore[attr-defined]
 
-    def __iter__(self) -> Generator[TemplateState, None, None]:
+    def __iter__(self) -> Generator[TemplateState]:
         """Return the iteration over all the states."""
         self._collect_domain()
         return _state_generator(self._hass, self._domain)
@@ -990,6 +1035,8 @@ class DomainStates:
 class TemplateStateBase(State):
     """Class to represent a state object in a template."""
 
+    __slots__ = ("_hass", "_collect", "_entity_id", "_state")
+
     _state: State
 
     __setitem__ = _readonly
@@ -1002,6 +1049,7 @@ class TemplateStateBase(State):
         self._hass = hass
         self._collect = collect
         self._entity_id = entity_id
+        self._cache: dict[str, Any] = {}
 
     def _collect_state(self) -> None:
         if self._collect and (render_info := _render_info.get()):
@@ -1022,7 +1070,7 @@ class TemplateStateBase(State):
             return self.state_with_unit
         raise KeyError
 
-    @property
+    @under_cached_property
     def entity_id(self) -> str:  # type: ignore[override]
         """Wrap State.entity_id.
 
@@ -1079,7 +1127,7 @@ class TemplateStateBase(State):
         return self._state.object_id
 
     @property
-    def name(self) -> str:
+    def name(self) -> str:  # type: ignore[override]
         """Wrap State.name."""
         self._collect_state()
         return self._state.name
@@ -1116,7 +1164,7 @@ class TemplateStateBase(State):
 class TemplateState(TemplateStateBase):
     """Class to represent a state object in a template."""
 
-    __slots__ = ("_state",)
+    __slots__ = ()
 
     # Inheritance is done so functions that check against State keep working
     def __init__(self, hass: HomeAssistant, state: State, collect: bool = True) -> None:
@@ -1131,6 +1179,8 @@ class TemplateState(TemplateStateBase):
 
 class TemplateStateFromEntityId(TemplateStateBase):
     """Class to represent a state object in a template."""
+
+    __slots__ = ()
 
     def __init__(
         self, hass: HomeAssistant, entity_id: str, collect: bool = True
@@ -1160,7 +1210,7 @@ def _collect_state(hass: HomeAssistant, entity_id: str) -> None:
 
 def _state_generator(
     hass: HomeAssistant, domain: str | None
-) -> Generator[TemplateState, None, None]:
+) -> Generator[TemplateState]:
     """State generator for a domain or all states."""
     states = hass.states
     # If domain is None, we want to iterate over all states, but making
@@ -1241,7 +1291,7 @@ def result_as_boolean(template_result: Any | None) -> bool:
 
     True/not 0/'1'/'true'/'yes'/'on'/'enable' are considered truthy
     False/0/None/'0'/'false'/'no'/'off'/'disable' are considered falsy
-
+    All other values are falsy
     """
     if template_result is None:
         return False
@@ -1378,6 +1428,24 @@ def device_attr(hass: HomeAssistant, device_or_entity_id: str, attr_name: str) -
     if device is None or not hasattr(device, attr_name):
         return None
     return getattr(device, attr_name)
+
+
+def config_entry_attr(
+    hass: HomeAssistant, config_entry_id_: str, attr_name: str
+) -> Any:
+    """Get config entry specific attribute."""
+    if not isinstance(config_entry_id_, str):
+        raise TemplateError("Must provide a config entry ID")
+
+    if attr_name not in ("domain", "title", "state", "source", "disabled_by"):
+        raise TemplateError("Invalid config entry attribute")
+
+    config_entry = hass.config_entries.async_get_entry(config_entry_id_)
+
+    if config_entry is None:
+        return None
+
+    return getattr(config_entry, attr_name)
 
 
 def is_device_attr(
@@ -2094,6 +2162,63 @@ def as_timedelta(value: str) -> timedelta | None:
     return dt_util.parse_duration(value)
 
 
+def merge_response(value: ServiceResponse) -> list[Any]:
+    """Merge action responses into single list.
+
+    Checks that the input is a correct service response:
+    {
+        "entity_id": {str: dict[str, Any]},
+    }
+    If response is a single list, it will extend the list with the items
+        and add the entity_id and value_key to each dictionary for reference.
+    If response is a dictionary or multiple lists,
+        it will append the dictionary/lists to the list
+        and add the entity_id to each dictionary for reference.
+    """
+    if not isinstance(value, dict):
+        raise TypeError("Response is not a dictionary")
+    if not value:
+        # Bail out early if response is an empty dictionary
+        return []
+
+    is_single_list = False
+    response_items: list = []
+    input_service_response = deepcopy(value)
+    for entity_id, entity_response in input_service_response.items():  # pylint: disable=too-many-nested-blocks
+        if not isinstance(entity_response, dict):
+            raise TypeError("Response is not a dictionary")
+        for value_key, type_response in entity_response.items():
+            if len(entity_response) == 1 and isinstance(type_response, list):
+                # Provides special handling for responses such as calendar events
+                # and weather forecasts where the response contains a single list with multiple
+                # dictionaries inside.
+                is_single_list = True
+                for dict_in_list in type_response:
+                    if isinstance(dict_in_list, dict):
+                        if ATTR_ENTITY_ID in dict_in_list:
+                            raise ValueError(
+                                f"Response dictionary already contains key '{ATTR_ENTITY_ID}'"
+                            )
+                        dict_in_list[ATTR_ENTITY_ID] = entity_id
+                        dict_in_list["value_key"] = value_key
+                response_items.extend(type_response)
+            else:
+                # Break the loop if not a single list as the logic is then managed in the outer loop
+                # which handles both dictionaries and in the case of multiple lists.
+                break
+
+        if not is_single_list:
+            _response = entity_response.copy()
+            if ATTR_ENTITY_ID in _response:
+                raise ValueError(
+                    f"Response dictionary already contains key '{ATTR_ENTITY_ID}'"
+                )
+            _response[ATTR_ENTITY_ID] = entity_id
+            response_items.append(_response)
+
+    return response_items
+
+
 def strptime(string, fmt, default=_SENTINEL):
     """Parse a time string to datetime."""
     try:
@@ -2309,7 +2434,7 @@ def regex_match(value, find="", ignorecase=False):
     """Match value using regex."""
     if not isinstance(value, str):
         value = str(value)
-    flags = re.I if ignorecase else 0
+    flags = re.IGNORECASE if ignorecase else 0
     return bool(_regex_cache(find, flags).match(value))
 
 
@@ -2320,7 +2445,7 @@ def regex_replace(value="", find="", replace="", ignorecase=False):
     """Replace using regex."""
     if not isinstance(value, str):
         value = str(value)
-    flags = re.I if ignorecase else 0
+    flags = re.IGNORECASE if ignorecase else 0
     return _regex_cache(find, flags).sub(replace, value)
 
 
@@ -2328,7 +2453,7 @@ def regex_search(value, find="", ignorecase=False):
     """Search using regex."""
     if not isinstance(value, str):
         value = str(value)
-    flags = re.I if ignorecase else 0
+    flags = re.IGNORECASE if ignorecase else 0
     return bool(_regex_cache(find, flags).search(value))
 
 
@@ -2341,7 +2466,7 @@ def regex_findall(value, find="", ignorecase=False):
     """Find all matches using regex."""
     if not isinstance(value, str):
         value = str(value)
-    flags = re.I if ignorecase else 0
+    flags = re.IGNORECASE if ignorecase else 0
     return _regex_cache(find, flags).findall(value)
 
 
@@ -2396,14 +2521,18 @@ def struct_unpack(value: bytes, format_string: str, offset: int = 0) -> Any | No
         return None
 
 
-def base64_encode(value):
+def base64_encode(value: str) -> str:
     """Perform base64 encode."""
     return base64.b64encode(value.encode("utf-8")).decode("utf-8")
 
 
-def base64_decode(value):
-    """Perform base64 denode."""
-    return base64.b64decode(value).decode("utf-8")
+def base64_decode(value: str, encoding: str | None = "utf-8") -> str | bytes:
+    """Perform base64 decode."""
+    decoded = base64.b64decode(value)
+    if encoding:
+        return decoded.decode(encoding)
+
+    return decoded
 
 
 def ordinal(value):
@@ -2805,6 +2934,7 @@ class TemplateEnvironment(ImmutableSandboxedEnvironment):
         self.globals["as_timedelta"] = as_timedelta
         self.globals["as_timestamp"] = forgiving_as_timestamp
         self.globals["timedelta"] = timedelta
+        self.globals["merge_response"] = merge_response
         self.globals["strptime"] = strptime
         self.globals["urlencode"] = urlencode
         self.globals["average"] = average
@@ -2822,6 +2952,7 @@ class TemplateEnvironment(ImmutableSandboxedEnvironment):
         self.globals["iif"] = iif
         self.globals["bool"] = forgiving_boolean
         self.globals["version"] = version
+        self.globals["zip"] = zip
         self.tests["is_number"] = is_number
         self.tests["list"] = _is_list
         self.tests["set"] = _is_set
@@ -2862,6 +2993,9 @@ class TemplateEnvironment(ImmutableSandboxedEnvironment):
 
         self.globals["device_attr"] = hassfunction(device_attr)
         self.filters["device_attr"] = self.globals["device_attr"]
+
+        self.globals["config_entry_attr"] = hassfunction(config_entry_attr)
+        self.filters["config_entry_attr"] = self.globals["config_entry_attr"]
 
         self.globals["is_device_attr"] = hassfunction(is_device_attr)
         self.tests["is_device_attr"] = hassfunction(is_device_attr, pass_eval_context)
@@ -3040,7 +3174,7 @@ class TemplateEnvironment(ImmutableSandboxedEnvironment):
         return super().is_safe_attribute(obj, attr, value)
 
     @overload
-    def compile(  # type: ignore[overload-overlap]
+    def compile(
         self,
         source: str | jinja2.nodes.Template,
         name: str | None = None,

@@ -5,7 +5,7 @@ from typing import Any, Generic, TypeVar
 
 from twitchAPI.object.base import TwitchObject
 
-from homeassistant.components.twitch import DOMAIN
+from homeassistant.components.twitch.const import DOMAIN
 from homeassistant.core import HomeAssistant
 
 from tests.common import MockConfigEntry, load_json_array_fixture
@@ -40,7 +40,7 @@ class TwitchIterObject(Generic[TwitchType]):
 
 async def get_generator(
     fixture: str, target_type: type[TwitchType]
-) -> AsyncGenerator[TwitchType, None]:
+) -> AsyncGenerator[TwitchType]:
     """Return async generator."""
     data = load_json_array_fixture(fixture, DOMAIN)
     async for item in get_generator_from_data(data, target_type):
@@ -49,7 +49,7 @@ async def get_generator(
 
 async def get_generator_from_data(
     items: list[dict[str, Any]], target_type: type[TwitchType]
-) -> AsyncGenerator[TwitchType, None]:
+) -> AsyncGenerator[TwitchType]:
     """Return async generator."""
     for item in items:
         yield target_type(**item)

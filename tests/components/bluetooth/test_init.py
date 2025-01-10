@@ -3,6 +3,7 @@
 import asyncio
 from datetime import timedelta
 import time
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 
 from bleak import BleakError
@@ -100,7 +101,7 @@ async def test_setup_and_stop_passive(
     init_kwargs = None
 
     class MockPassiveBleakScanner:
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             """Init the scanner."""
             nonlocal init_kwargs
             init_kwargs = kwargs
@@ -129,7 +130,7 @@ async def test_setup_and_stop_passive(
 
     assert init_kwargs == {
         "adapter": "hci0",
-        "bluez": scanner.PASSIVE_SCANNER_ARGS,
+        "bluez": scanner.PASSIVE_SCANNER_ARGS,  # pylint: disable=c-extension-no-member
         "scanning_mode": "passive",
         "detection_callback": ANY,
     }
@@ -151,7 +152,7 @@ async def test_setup_and_stop_old_bluez(
     init_kwargs = None
 
     class MockBleakScanner:
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             """Init the scanner."""
             nonlocal init_kwargs
             init_kwargs = kwargs
@@ -432,11 +433,11 @@ async def test_discovery_match_by_service_uuid(
         }
     ],
 )
+@pytest.mark.usefixtures("mock_bluetooth_adapters")
 async def test_discovery_match_by_service_uuid_and_short_local_name(
     mock_async_get_bluetooth: AsyncMock,
     hass: HomeAssistant,
     mock_bleak_scanner_start: MagicMock,
-    mock_bluetooth_adapters: None,
 ) -> None:
     """Test bluetooth discovery match by service_uuid and short local name."""
     entry = MockConfigEntry(domain="bluetooth", unique_id="00:00:00:00:00:01")
@@ -2871,7 +2872,7 @@ async def test_default_address_config_entries_removed_linux(
     assert not hass.config_entries.async_entries(bluetooth.DOMAIN)
 
 
-@pytest.mark.usefixtures("enable_bluetooth", "one_adapter")
+@pytest.mark.usefixtures("one_adapter")
 async def test_can_unsetup_bluetooth_single_adapter_linux(
     hass: HomeAssistant, mock_bleak_scanner_start: MagicMock
 ) -> None:
@@ -2889,12 +2890,17 @@ async def test_can_unsetup_bluetooth_single_adapter_linux(
         await hass.async_block_till_done()
 
 
-@pytest.mark.usefixtures("enable_bluetooth", "two_adapters")
+@pytest.mark.usefixtures("two_adapters")
 async def test_can_unsetup_bluetooth_multiple_adapters(
     hass: HomeAssistant,
     mock_bleak_scanner_start: MagicMock,
 ) -> None:
     """Test we can setup and unsetup bluetooth with multiple adapters."""
+    # Setup bluetooth first since otherwise loading the first
+    # config entry will load the second one as well
+    await async_setup_component(hass, bluetooth.DOMAIN, {})
+    await hass.async_block_till_done()
+
     entry1 = MockConfigEntry(
         domain=bluetooth.DOMAIN, data={}, unique_id="00:00:00:00:00:01"
     )

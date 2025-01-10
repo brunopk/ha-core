@@ -9,6 +9,7 @@ from typing import Any
 from plugwise.constants import BinarySensorType
 
 from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
@@ -22,6 +23,9 @@ from .entity import PlugwiseEntity
 
 SEVERITIES = ["other", "info", "warning", "error"]
 
+# Coordinator is used to centralize the data updates
+PARALLEL_UPDATES = 0
+
 
 @dataclass(frozen=True)
 class PlugwiseBinarySensorEntityDescription(BinarySensorEntityDescription):
@@ -31,6 +35,11 @@ class PlugwiseBinarySensorEntityDescription(BinarySensorEntityDescription):
 
 
 BINARY_SENSORS: tuple[PlugwiseBinarySensorEntityDescription, ...] = (
+    PlugwiseBinarySensorEntityDescription(
+        key="low_battery",
+        device_class=BinarySensorDeviceClass.BATTERY,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     PlugwiseBinarySensorEntityDescription(
         key="compressor_state",
         translation_key="compressor_state",
@@ -49,7 +58,6 @@ BINARY_SENSORS: tuple[PlugwiseBinarySensorEntityDescription, ...] = (
     PlugwiseBinarySensorEntityDescription(
         key="flame_state",
         translation_key="flame_state",
-        name="Flame state",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     PlugwiseBinarySensorEntityDescription(
@@ -89,26 +97,20 @@ async def async_setup_entry(
         if not coordinator.new_devices:
             return
 
-        entities: list[PlugwiseBinarySensorEntity] = []
-        for device_id, device in coordinator.data.devices.items():
-            if not (binary_sensors := device.get("binary_sensors")):
-                continue
-            for description in BINARY_SENSORS:
-                if description.key not in binary_sensors:
-                    continue
-
-                entities.append(
-                    PlugwiseBinarySensorEntity(
-                        coordinator,
-                        device_id,
-                        description,
-                    )
+        async_add_entities(
+            PlugwiseBinarySensorEntity(coordinator, device_id, description)
+            for device_id in coordinator.new_devices
+            if (
+                binary_sensors := coordinator.data.devices[device_id].get(
+                    "binary_sensors"
                 )
-        async_add_entities(entities)
-
-    entry.async_on_unload(coordinator.async_add_listener(_add_entities))
+            )
+            for description in BINARY_SENSORS
+            if description.key in binary_sensors
+        )
 
     _add_entities()
+    entry.async_on_unload(coordinator.async_add_listener(_add_entities))
 
 
 class PlugwiseBinarySensorEntity(PlugwiseEntity, BinarySensorEntity):

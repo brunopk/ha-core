@@ -26,7 +26,7 @@ TITLE = "Test"
 
 
 @pytest.fixture
-def mock_setup_entry() -> Generator[AsyncMock, None, None]:
+def mock_setup_entry() -> Generator[AsyncMock]:
     """Override async_setup_entry."""
     with patch(
         "homeassistant.components.twitch.async_setup_entry", return_value=True
@@ -93,7 +93,7 @@ def mock_connection(aioclient_mock: AiohttpClientMocker) -> None:
 
 
 @pytest.fixture
-def twitch_mock() -> Generator[AsyncMock, None, None]:
+def twitch_mock() -> Generator[AsyncMock]:
     """Return as fixture to inject other mocks."""
     with (
         patch(
@@ -111,8 +111,8 @@ def twitch_mock() -> Generator[AsyncMock, None, None]:
         mock_client.return_value.get_followed_channels.return_value = TwitchIterObject(
             "get_followed_channels.json", FollowedChannel
         )
-        mock_client.return_value.get_streams.return_value = get_generator(
-            "get_streams.json", Stream
+        mock_client.return_value.get_followed_streams.return_value = get_generator(
+            "get_followed_streams.json", Stream
         )
         mock_client.return_value.check_user_subscription.return_value = (
             UserSubscription(

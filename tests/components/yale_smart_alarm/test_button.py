@@ -9,8 +9,7 @@ import pytest
 from syrupy.assertion import SnapshotAssertion
 from yalesmartalarmclient.exceptions import UnknownError
 
-from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
-from homeassistant.components.button.const import SERVICE_PRESS
+from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN, SERVICE_PRESS
 from homeassistant.const import ATTR_ENTITY_ID, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -38,7 +37,7 @@ async def test_button(
         BUTTON_DOMAIN,
         SERVICE_PRESS,
         {
-            ATTR_ENTITY_ID: "button.yale_smart_alarm_panic_button",
+            ATTR_ENTITY_ID: "button.test_username_panic_button",
         },
         blocking=True,
     )
@@ -51,7 +50,7 @@ async def test_button(
             BUTTON_DOMAIN,
             SERVICE_PRESS,
             {
-                ATTR_ENTITY_ID: "button.yale_smart_alarm_panic_button",
+                ATTR_ENTITY_ID: "button.test_username_panic_button",
             },
             blocking=True,
         )

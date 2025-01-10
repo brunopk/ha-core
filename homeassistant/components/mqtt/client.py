@@ -44,7 +44,6 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import bind_hass
 from homeassistant.setup import SetupPhases, async_pause_setup
-from homeassistant.util.async_ import create_eager_task
 from homeassistant.util.collection import chunked_or_all
 from homeassistant.util.logging import catch_log_exception, log_exception
 
@@ -84,7 +83,7 @@ from .models import (
     PublishPayloadType,
     ReceiveMessage,
 )
-from .util import get_file_path, mqtt_config_entry_enabled
+from .util import EnsureJobAfterCooldown, get_file_path, mqtt_config_entry_enabled
 
 if TYPE_CHECKING:
     # Only import for paho-mqtt type checking here, imports are done locally
@@ -112,6 +111,7 @@ UNSUBSCRIBE_COOLDOWN = 0.1
 TIMEOUT_ACK = 10
 RECONNECT_INTERVAL_SECONDS = 10
 
+MAX_WILDCARD_SUBSCRIBES_PER_CALL = 1
 MAX_SUBSCRIBES_PER_CALL = 500
 MAX_UNSUBSCRIBES_PER_CALL = 500
 
@@ -119,7 +119,7 @@ MAX_PACKETS_TO_READ = 500
 
 type SocketType = socket.socket | ssl.SSLSocket | mqtt.WebsocketWrapper | Any
 
-type SubscribePayloadType = str | bytes  # Only bytes if encoding is None
+type SubscribePayloadType = str | bytes | bytearray  # Only bytes if encoding is None
 
 
 def publish(
@@ -227,7 +227,7 @@ def async_subscribe_internal(
             translation_placeholders={"topic": topic},
         ) from exc
     client = mqtt_data.client
-    if not client.connected and not mqtt_config_entry_enabled(hass):
+    if not mqtt_config_entry_enabled(hass):
         raise HomeAssistantError(
             f"Cannot subscribe to topic '{topic}', MQTT is not enabled",
             translation_key="mqtt_not_setup_cannot_subscribe",
@@ -276,9 +276,22 @@ class Subscription:
 class MqttClientSetup:
     """Helper class to setup the paho mqtt client from config."""
 
-    def __init__(self, config: ConfigType) -> None:
-        """Initialize the MQTT client setup helper."""
+    _client: AsyncMQTTClient
 
+    def __init__(self, config: ConfigType) -> None:
+        """Initialize the MQTT client setup helper.
+
+        self.setup must be run in an executor job.
+        """
+
+        self._config = config
+
+    def setup(self) -> None:
+        """Set up the MQTT client.
+
+        The setup of the MQTT client should be run in an executor job,
+        because it accesses files, so it does IO.
+        """
         # We don't import on the top because some integrations
         # should be able to optionally rely on MQTT.
         import paho.mqtt.client as mqtt  # pylint: disable=import-outside-toplevel
@@ -286,6 +299,7 @@ class MqttClientSetup:
         # pylint: disable-next=import-outside-toplevel
         from .async_client import AsyncMQTTClient
 
+        config = self._config
         if (protocol := config.get(CONF_PROTOCOL, DEFAULT_PROTOCOL)) == PROTOCOL_31:
             proto = mqtt.MQTTv31
         elif protocol == PROTOCOL_5:
@@ -297,11 +311,14 @@ class MqttClientSetup:
             # PAHO MQTT relies on the MQTT server to generate random client IDs.
             # However, that feature is not mandatory so we generate our own.
             client_id = mqtt.base62(uuid.uuid4().int, padding=22)
-        transport = config.get(CONF_TRANSPORT, DEFAULT_TRANSPORT)
+        transport: str = config.get(CONF_TRANSPORT, DEFAULT_TRANSPORT)
         self._client = AsyncMQTTClient(
-            client_id, protocol=proto, transport=transport, reconnect_on_failure=False
+            client_id,
+            protocol=proto,
+            transport=transport,
+            reconnect_on_failure=False,
         )
-        self._client.async_setup()
+        self._client.setup()
 
         # Enable logging
         self._client.enable_logger()
@@ -340,103 +357,6 @@ class MqttClientSetup:
         return self._client
 
 
-class EnsureJobAfterCooldown:
-    """Ensure a cool down period before executing a job.
-
-    When a new execute request arrives we cancel the current request
-    and start a new one.
-    """
-
-    def __init__(
-        self, timeout: float, callback_job: Callable[[], Coroutine[Any, None, None]]
-    ) -> None:
-        """Initialize the timer."""
-        self._loop = asyncio.get_running_loop()
-        self._timeout = timeout
-        self._callback = callback_job
-        self._task: asyncio.Task | None = None
-        self._timer: asyncio.TimerHandle | None = None
-        self._next_execute_time = 0.0
-
-    def set_timeout(self, timeout: float) -> None:
-        """Set a new timeout period."""
-        self._timeout = timeout
-
-    async def _async_job(self) -> None:
-        """Execute after a cooldown period."""
-        try:
-            await self._callback()
-        except HomeAssistantError as ha_error:
-            _LOGGER.error("%s", ha_error)
-
-    @callback
-    def _async_task_done(self, task: asyncio.Task) -> None:
-        """Handle task done."""
-        self._task = None
-
-    @callback
-    def async_execute(self) -> asyncio.Task:
-        """Execute the job."""
-        if self._task:
-            # Task already running,
-            # so we schedule another run
-            self.async_schedule()
-            return self._task
-
-        self._async_cancel_timer()
-        self._task = create_eager_task(self._async_job())
-        self._task.add_done_callback(self._async_task_done)
-        return self._task
-
-    @callback
-    def _async_cancel_timer(self) -> None:
-        """Cancel any pending task."""
-        if self._timer:
-            self._timer.cancel()
-            self._timer = None
-
-    @callback
-    def async_schedule(self) -> None:
-        """Ensure we execute after a cooldown period."""
-        # We want to reschedule the timer in the future
-        # every time this is called.
-        next_when = self._loop.time() + self._timeout
-        if not self._timer:
-            self._timer = self._loop.call_at(next_when, self._async_timer_reached)
-            return
-
-        if self._timer.when() < next_when:
-            # Timer already running, set the next execute time
-            # if it fires too early, it will get rescheduled
-            self._next_execute_time = next_when
-
-    @callback
-    def _async_timer_reached(self) -> None:
-        """Handle timer fire."""
-        self._timer = None
-        if self._loop.time() >= self._next_execute_time:
-            self.async_execute()
-            return
-        # Timer fired too early because there were multiple
-        # calls async_schedule. Reschedule the timer.
-        self._timer = self._loop.call_at(
-            self._next_execute_time, self._async_timer_reached
-        )
-
-    async def async_cleanup(self) -> None:
-        """Cleanup any pending task."""
-        self._async_cancel_timer()
-        if not self._task:
-            return
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            _LOGGER.exception("Error cleaning up task")
-
-
 class MQTT:
     """Home Assistant MQTT client."""
 
@@ -456,7 +376,9 @@ class MQTT:
         self._simple_subscriptions: defaultdict[str, set[Subscription]] = defaultdict(
             set
         )
-        self._wildcard_subscriptions: set[Subscription] = set()
+        # To ensure the wildcard subscriptions order is preserved, we use a dict
+        # with `None` values instead of a set.
+        self._wildcard_subscriptions: dict[Subscription, None] = {}
         # _retained_topics prevents a Subscription from receiving a
         # retained message more than once per topic. This prevents flooding
         # already active subscribers when new subscribers subscribe to a topic
@@ -508,12 +430,12 @@ class MQTT:
         await self.async_init_client()
 
     @property
-    def subscriptions(self) -> list[Subscription]:
+    def subscriptions(self) -> set[Subscription]:
         """Return the tracked subscriptions."""
-        return [
+        return {
             *chain.from_iterable(self._simple_subscriptions.values()),
             *self._wildcard_subscriptions,
-        ]
+        }
 
     def cleanup(self) -> None:
         """Clean up listeners."""
@@ -521,7 +443,7 @@ class MQTT:
             self._cleanup_on_unload.pop()()
 
     @contextlib.asynccontextmanager
-    async def _async_connect_in_executor(self) -> AsyncGenerator[None, None]:
+    async def _async_connect_in_executor(self) -> AsyncGenerator[None]:
         # While we are connecting in the executor we need to
         # handle on_socket_open and on_socket_register_write
         # in the executor as well.
@@ -543,7 +465,9 @@ class MQTT:
                 self.hass, "homeassistant.components.mqtt.async_client"
             )
 
-        mqttc = MqttClientSetup(self.conf).client
+        mqttc_setup = MqttClientSetup(self.conf)
+        await self.hass.async_add_executor_job(mqttc_setup.setup)
+        mqttc = mqttc_setup.client
         # on_socket_unregister_write and _async_on_socket_close
         # are only ever called in the event loop
         mqttc.on_socket_close = self._async_on_socket_close
@@ -737,7 +661,7 @@ class MQTT:
                     self.conf.get(CONF_PORT, DEFAULT_PORT),
                     self.conf.get(CONF_KEEPALIVE, DEFAULT_KEEPALIVE),
                 )
-        except OSError as err:
+        except (OSError, mqtt.WebsocketConnectionError) as err:
             _LOGGER.error("Failed to connect to MQTT server due to exception: %s", err)
             self._async_connection_result(False)
         finally:
@@ -771,20 +695,27 @@ class MQTT:
 
     async def _reconnect_loop(self) -> None:
         """Reconnect to the MQTT server."""
+        # pylint: disable-next=import-outside-toplevel
+        import paho.mqtt.client as mqtt
+
         while True:
             if not self.connected:
                 try:
                     async with self._connection_lock, self._async_connect_in_executor():
                         await self.hass.async_add_executor_job(self._mqttc.reconnect)
-                except OSError as err:
+                except (OSError, mqtt.WebsocketConnectionError) as err:
                     _LOGGER.debug(
                         "Error re-connecting to MQTT server due to exception: %s", err
                     )
 
             await asyncio.sleep(RECONNECT_INTERVAL_SECONDS)
 
-    async def async_disconnect(self) -> None:
-        """Stop the MQTT client."""
+    async def async_disconnect(self, disconnect_paho_client: bool = False) -> None:
+        """Stop the MQTT client.
+
+        We only disconnect grafully if disconnect_paho_client is set, but not
+        when Home Assistant is shut down.
+        """
 
         # stop waiting for any pending subscriptions
         await self._subscribe_debouncer.async_cleanup()
@@ -804,11 +735,13 @@ class MQTT:
             self._should_reconnect = False
             self._async_cancel_reconnect()
             # We do not gracefully disconnect to ensure
-            # the broker publishes the will message
+            # the broker publishes the will message unless the entry is reloaded
+            if disconnect_paho_client:
+                self._mqttc.disconnect()
 
     @callback
     def async_restore_tracked_subscriptions(
-        self, subscriptions: list[Subscription]
+        self, subscriptions: set[Subscription]
     ) -> None:
         """Restore tracked subscriptions after reload."""
         for subscription in subscriptions:
@@ -826,7 +759,7 @@ class MQTT:
         if subscription.is_simple_match:
             self._simple_subscriptions[subscription.topic].add(subscription)
         else:
-            self._wildcard_subscriptions.add(subscription)
+            self._wildcard_subscriptions[subscription] = None
 
     @callback
     def _async_untrack_subscription(self, subscription: Subscription) -> None:
@@ -844,9 +777,13 @@ class MQTT:
                 if not simple_subscriptions[topic]:
                     del simple_subscriptions[topic]
             else:
-                self._wildcard_subscriptions.remove(subscription)
+                del self._wildcard_subscriptions[subscription]
         except (KeyError, ValueError) as exc:
-            raise HomeAssistantError("Can't remove subscription twice") from exc
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="mqtt_not_setup_cannot_unsubscribe_twice",
+                translation_placeholders={"topic": topic},
+            ) from exc
 
     @callback
     def _async_queue_subscriptions(
@@ -873,7 +810,7 @@ class MQTT:
         """Return a string with the exception message."""
         # if msg_callback is a partial we return the name of the first argument
         if isinstance(msg_callback, partial):
-            call_back_name = getattr(msg_callback.args[0], "__name__")  # type: ignore[unreachable]
+            call_back_name = getattr(msg_callback.args[0], "__name__")
         else:
             call_back_name = getattr(msg_callback, "__name__")
         return (
@@ -892,7 +829,11 @@ class MQTT:
     ) -> Callable[[], None]:
         """Set up a subscription to a topic with the provided qos."""
         if not isinstance(topic, str):
-            raise HomeAssistantError("Topic needs to be a string!")
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="mqtt_topic_not_a_string",
+                translation_placeholders={"topic": topic},
+            )
 
         if job_type is None:
             job_type = get_hassjob_callable_job_type(msg_callback)
@@ -966,14 +907,27 @@ class MQTT:
         if not self._pending_subscriptions:
             return
 
-        subscriptions: dict[str, int] = self._pending_subscriptions
+        # Split out the wildcard subscriptions, we subscribe to them one by one
+        pending_subscriptions: dict[str, int] = self._pending_subscriptions
+        pending_wildcard_subscriptions = {
+            subscription.topic: pending_subscriptions.pop(subscription.topic)
+            for subscription in self._wildcard_subscriptions
+            if subscription.topic in pending_subscriptions
+        }
+
         self._pending_subscriptions = {}
 
-        subscription_list = list(subscriptions.items())
         debug_enabled = _LOGGER.isEnabledFor(logging.DEBUG)
 
-        for chunk in chunked_or_all(subscription_list, MAX_SUBSCRIBES_PER_CALL):
+        for chunk in chain(
+            chunked_or_all(
+                pending_wildcard_subscriptions.items(), MAX_WILDCARD_SUBSCRIBES_PER_CALL
+            ),
+            chunked_or_all(pending_subscriptions.items(), MAX_SUBSCRIBES_PER_CALL),
+        ):
             chunk_list = list(chunk)
+            if not chunk_list:
+                continue
 
             result, mid = self._mqttc.subscribe(chunk_list)
 
@@ -1009,7 +963,8 @@ class MQTT:
         self, birth_message: PublishMessage
     ) -> None:
         """Resubscribe to all topics and publish birth message."""
-        await self._async_perform_subscriptions()
+        self._async_queue_resubscribe()
+        self._subscribe_debouncer.async_schedule()
         await self._ha_started.wait()  # Wait for Home Assistant to start
         await self._discovery_cooldown()  # Wait for MQTT discovery to cool down
         # Update subscribe cooldown period to a shorter time
@@ -1065,7 +1020,6 @@ class MQTT:
             result_code,
         )
 
-        self._async_queue_resubscribe()
         birth: dict[str, Any]
         if birth := self.conf.get(CONF_BIRTH_MESSAGE, DEFAULT_BIRTH):
             birth_message = PublishMessage(**birth)
@@ -1076,13 +1030,8 @@ class MQTT:
             )
         else:
             # Update subscribe cooldown period to a shorter time
-            self.config_entry.async_create_background_task(
-                self.hass,
-                self._async_perform_subscriptions(),
-                name="mqtt re-subscribe",
-            )
-            self._subscribe_debouncer.set_timeout(SUBSCRIBE_COOLDOWN)
-            _LOGGER.info("MQTT client initialized")
+            self._async_queue_resubscribe()
+            self._subscribe_debouncer.async_schedule()
 
         self._async_connection_result(True)
 
@@ -1218,8 +1167,8 @@ class MQTT:
         # see https://github.com/eclipse/paho.mqtt.python/issues/687
         # properties and reason codes are not used in Home Assistant
         future = self._async_get_mid_future(mid)
-        if future.done() and future.exception():
-            # Timed out
+        if future.done() and (future.cancelled() or future.exception()):
+            # Timed out or cancelled
             return
         future.set_result(None)
 
@@ -1254,7 +1203,8 @@ class MQTT:
         self._async_connection_result(False)
         self.connected = False
         async_dispatcher_send(self.hass, MQTT_CONNECTION_STATE, False)
-        _LOGGER.warning(
+        _LOGGER.log(
+            logging.INFO if result_code == 0 else logging.DEBUG,
             "Disconnected from MQTT server %s:%s (%s)",
             self.conf[CONF_BROKER],
             self.conf.get(CONF_PORT, DEFAULT_PORT),
@@ -1274,7 +1224,11 @@ class MQTT:
             import paho.mqtt.client as mqtt
 
             raise HomeAssistantError(
-                f"Error talking to MQTT: {mqtt.error_string(result_code)}"
+                translation_domain=DOMAIN,
+                translation_key="mqtt_broker_error",
+                translation_placeholders={
+                    "error_message": mqtt.error_string(result_code)
+                },
             )
 
         # Create the mid event if not created, either _mqtt_handle_mid or

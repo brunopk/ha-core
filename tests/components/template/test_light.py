@@ -1,11 +1,13 @@
 """The tests for the  Template light platform."""
 
+from typing import Any
+
 import pytest
 
 from homeassistant.components import light
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
-    ATTR_COLOR_TEMP,
+    ATTR_COLOR_TEMP_KELVIN,
     ATTR_EFFECT,
     ATTR_HS_COLOR,
     ATTR_RGB_COLOR,
@@ -152,7 +154,9 @@ OPTIMISTIC_RGBWW_COLOR_LIGHT_CONFIG = {
 }
 
 
-async def async_setup_light(hass, count, light_config):
+async def async_setup_light(
+    hass: HomeAssistant, count: int, light_config: dict[str, Any]
+) -> None:
     """Do setup of light integration."""
     config = {"light": {"platform": "template", "lights": light_config}}
 
@@ -169,7 +173,9 @@ async def async_setup_light(hass, count, light_config):
 
 
 @pytest.fixture
-async def setup_light(hass, count, light_config):
+async def setup_light(
+    hass: HomeAssistant, count: int, light_config: dict[str, Any]
+) -> None:
     """Do setup of light integration."""
     await async_setup_light(hass, count, light_config)
 
@@ -767,7 +773,7 @@ async def test_temperature_action_no_template(
     await hass.services.async_call(
         light.DOMAIN,
         SERVICE_TURN_ON,
-        {ATTR_ENTITY_ID: "light.test_template_light", ATTR_COLOR_TEMP: 345},
+        {ATTR_ENTITY_ID: "light.test_template_light", ATTR_COLOR_TEMP_KELVIN: 2898},
         blocking=True,
     )
 
@@ -881,7 +887,7 @@ async def test_legacy_color_action_no_template(
     hass: HomeAssistant,
     setup_light,
     calls: list[ServiceCall],
-):
+) -> None:
     """Test setting color with optimistic template."""
     state = hass.states.get("light.test_template_light")
     assert state.attributes.get("hs_color") is None
@@ -1103,12 +1109,12 @@ async def test_rgbww_color_action_no_template(
     ],
 )
 async def test_legacy_color_template(
-    hass,
-    expected_hs,
-    expected_color_mode,
-    count,
-    color_template,
-):
+    hass: HomeAssistant,
+    expected_hs: tuple[float, float] | None,
+    expected_color_mode: ColorMode,
+    count: int,
+    color_template: str,
+) -> None:
     """Test the template for the color."""
     light_config = {
         "test_template_light": {
@@ -1389,7 +1395,7 @@ async def test_all_colors_mode_no_template(
     await hass.services.async_call(
         light.DOMAIN,
         SERVICE_TURN_ON,
-        {ATTR_ENTITY_ID: "light.test_template_light", ATTR_COLOR_TEMP: 123},
+        {ATTR_ENTITY_ID: "light.test_template_light", ATTR_COLOR_TEMP_KELVIN: 8130},
         blocking=True,
     )
 
@@ -1525,7 +1531,7 @@ async def test_all_colors_mode_no_template(
     await hass.services.async_call(
         light.DOMAIN,
         SERVICE_TURN_ON,
-        {ATTR_ENTITY_ID: "light.test_template_light", ATTR_COLOR_TEMP: 234},
+        {ATTR_ENTITY_ID: "light.test_template_light", ATTR_COLOR_TEMP_KELVIN: 4273},
         blocking=True,
     )
 

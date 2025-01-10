@@ -159,6 +159,7 @@ from homeassistant.helpers.config_entry_oauth2_flow import OAuth2AuthorizeCallba
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import bind_hass
 from homeassistant.util import dt as dt_util
+from homeassistant.util.hass_dict import HassKey
 
 from . import indieauth, login_flow, mfa_setup_flow
 
@@ -166,7 +167,7 @@ DOMAIN = "auth"
 
 type StoreResultType = Callable[[str, Credentials], str]
 type RetrieveResultType = Callable[[str, str], Credentials | None]
-
+DATA_STORE: HassKey[StoreResultType] = HassKey(DOMAIN)
 CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 DELETE_CURRENT_TOKEN_DELAY = 2
@@ -177,14 +178,14 @@ def create_auth_code(
     hass: HomeAssistant, client_id: str, credential: Credentials
 ) -> str:
     """Create an authorization code to fetch tokens."""
-    return cast(StoreResultType, hass.data[DOMAIN])(client_id, credential)
+    return hass.data[DATA_STORE](client_id, credential)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Component to allow users to login."""
     store_result, retrieve_result = _create_auth_code_store()
 
-    hass.data[DOMAIN] = store_result
+    hass.data[DATA_STORE] = store_result
 
     hass.http.register_view(TokenView(retrieve_result))
     hass.http.register_view(RevokeTokenView())
@@ -544,7 +545,7 @@ async def websocket_create_long_lived_access_token(
     try:
         access_token = hass.auth.async_create_access_token(refresh_token)
     except InvalidAuthError as exc:
-        connection.send_error(msg["id"], websocket_api.const.ERR_UNAUTHORIZED, str(exc))
+        connection.send_error(msg["id"], websocket_api.ERR_UNAUTHORIZED, str(exc))
         return
 
     connection.send_result(msg["id"], access_token)
